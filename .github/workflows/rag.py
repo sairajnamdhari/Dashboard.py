@@ -1,0 +1,82 @@
+import os
+import streamlit as st
+from dotenv import load_dotenv
+from langchain_community.embeddings import OpenAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_community.llms import OpenAI
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.chains import RetrievalQA
+import fitz  # PyMuPDF
+import pandas as pd
+import docx
+
+# ✅ Load environment variables
+load_dotenv()
+openai_api_key = os.getenv("OPENAI_API_KEY")
+
+if not openai_api_key:
+    raise ValueError("❌ OPENAI_API_KEY not found. Please check your .env file.")
+
+st.set_page_config(page_title="📜 Legal Assistant", layout="centered")
+st.title("📄 Multi-Format Document Assistant")
+
+uploaded_file = st.file_uploader("Upload a document (.pdf, .txt, .csv, .docx, .xlsx)", type=["pdf", "txt", "csv", "docx", "xlsx"])
+
+def extract_text(file):
+    if file.name.endswith(".pdf"):
+        text = ""
+        with fitz.open(stream=file.read(), filetype="pdf") as doc:
+            for page in doc:
+                text += page.get_text()
+        return text
+
+    elif file.name.endswith(".txt"):
+        return file.read().decode("utf-8")
+
+    elif file.name.endswith(".csv"):
+        df = pd.read_csv(file)
+        return df.to_string(index=False)
+
+    elif file.name.endswith(".xlsx"):
+        df = pd.read_excel(file)
+        return df.to_string(index=False)
+
+    elif file.name.endswith(".docx"):
+        doc = docx.Document(file)
+        return "\n".join([para.text for para in doc.paragraphs])
+
+    else:
+        return None
+
+if uploaded_file:
+    text = extract_text(uploaded_file)
+    
+    if not text:
+        st.error("Unsupported file format!")
+    else: 
+        st.success("✅ Document loaded!")
+
+        # Split text
+        splitter = CharacterTextSplitter(chunk_size=1000, chunk_overlap=100)
+        chunks = splitter.create_documents([text])
+
+        # Embedding and retrieval setup
+        embeddings = OpenAIEmbeddings(openai_api_key=openai_api_key)
+        vectorstore = FAISS.from_documents(chunks, embeddings)
+        retriever = vectorstore.as_retriever()
+
+        # LLM setup
+        llm = OpenAI(
+            model_name="gpt-3.5-turbo-instruct",
+            temperature=0,
+            openai_api_key=openai_api_key
+        )
+        qa = RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
+
+        st.subheader("💬 Ask questions about your document")
+        query = st.text_input("Enter your question:")
+
+        if query:
+            with st.spinner("Thinking..."):
+                answer = qa.run(query)
+            st.markdown(f"🧠 *Answer:* {answer}")
